@@ -8,7 +8,8 @@
  * Others   :
  * Log      :
  * ======================================================
- */
+ */ 
+
 /* 头文件 */
 #include <stdio.h>     /* perror scanf printf gets */
 #include <stdlib.h>    /* exit   atoi  system malloc free*/
@@ -42,8 +43,9 @@
 #define CONNECT_INFO 0 /* 客户端请求服务器回传客户端IP和端口号 */
 #define SERVER_PWD   1 /* 显示服务器当前路径 */
 #define SERVER_LS    2 /* 显示服务器当前路径所有文件信息 */
-#define SERVER_MKDIR 3 /* 显示服务器当前路径所有文件信息 */
-
+#define SERVER_MKDIR 3 /* 在服务器当前路径下新建目录 */
+#define SERVER_RM    4 /* 在服务器当前路径下删除一个文件或者目录 */
+#define SERVER_CD    5 /* 在服务器下切换目录 */
 
 /* 客户端信息的结构体 */
 typedef struct
@@ -86,6 +88,9 @@ int serverFunc(int socket_fd, MSG * msg);        /* 客户端操作服务器功�
 int getServerLocalPWD(int socket_fd, MSG * msg); /* 获取服务器当前路径 */
 int getServerFileList(int socket_fd, MSG * msg); /* 获取服务器当前路径下所有文件 */
 int createServerDir(int socket_fd, MSG * msg);   /* 在服务器当前路径创建目录 */
+int deleteServerFile(int socket_fd, MSG * msg);  /* 在服务器当前路径删除一个文件或者目录 */
+int cdServerDir(int socket_fd, MSG * msg);       /* 切换到服务器指定路径 */
+
 
 int main(int argc, char *argv[])
 {
@@ -522,7 +527,7 @@ int getFileInfo(const char * filename)
 	printf(" %5.1fK",(float)file_attr.st_size / 1024);
 	/* 6. 打印文件修改时间 */
 	t = localtime(&file_attr.st_ctime);
-	printf(" %d-%d-%d %2d:%-2d",t->tm_year+1900,t->tm_mon+1,t->tm_mday,t->tm_hour,t->tm_min);
+	printf(" %d-%02d-%02d %02d:%02d",t->tm_year+1900,t->tm_mon+1,t->tm_mday,t->tm_hour,t->tm_min);
 	if( S_ISDIR(file_attr.st_mode) )
 		printf(GREEN" %s\n"CLS, filename);
 	else
@@ -650,7 +655,7 @@ int deleteClientFile(void)
 		return -1;
 	}
 	while ((ch = getchar()) != EOF && ch != '\n') ; /* 清除缓冲区的多余字符内容 */
-	/* 获取当前路径(其实不拼接似乎也可以在当前路径正常创建目录) */
+	/* 获取当前路径(其实不拼接似乎也可以在当前路径正常删除目录) */
 	if( (getcwd(file_path, 256)) == NULL )
 	{
 		printf(RED"[error]get local pwd failed!\n"CLS);
@@ -682,7 +687,7 @@ int deleteClientFile(void)
 		printf(GREEN"[ OK  ]delete successfully!\n"CLS);
 	}
 	else
-		printf(RED"[error]Failed to delete file(The directory may not exist)!\n"CLS);
+		printf(RED"[error]Failed to delete file(The file may not exist)!\n"CLS);
 	free(file_path);
 	return 0;
 }
@@ -707,7 +712,7 @@ int cdClientDir(void)
 		return -1;
 	}
 	memset(dir_path, 0, 256);/* 申请的内存块清零 */
-	/* 请输入文件名称 */
+	/* 请输入目录名称 */
 	printf("Please enter cd command(cd path):");
 	if( scanf("%[^\n]", command) < 0 )/* 获取输入数据，可以带空格 */
 	{
@@ -718,7 +723,7 @@ int cdClientDir(void)
 	printf("command = %s\n\n", command);
 	/* 获取 cd 后边的路径 */
 	char * dirName;
-	if( (dirName = strchr(command, 'd')) == NULL)/* 在参数 command 所指向的字符串中搜索第一次出现字符空格（一个无符号字符）的位置。 */
+	if( (dirName = strchr(command, ' ')) == NULL)/* 在参数 command 所指向的字符串中搜索第一次出现字符空格（一个无符号字符）的位置。 */
 	{
 		perror(RED"[error]strchr"CLS);
 		return -1;
@@ -732,15 +737,15 @@ int cdClientDir(void)
 		printf(RED"[error]command error!\n"CLS);
 		return -1;
 	}
-	/* 获取当前路径(其实不拼接似乎也可以在当前路径正常创建目录) */
+	/* 获取当前路径 */
 	if( (getcwd(dir_path, 256)) == NULL )
 	{
-		printf(RED"[error]get local pwd failed!\n"CLS);
+		printf(RED"[error]get client local pwd failed!\n"CLS);
 		return -1;
 	}
 	else
 	{
-		printf(GREEN"[ OK  ]get local pwd successfully!\n"CLS);
+		printf(GREEN"[ OK  ]get client local pwd successfully!\n"CLS);
 		/* 切换到指定目录 */
 		if( strncmp(dirName, "..", 2) != 0)
 		{
@@ -776,12 +781,12 @@ int cdClientDir(void)
 	memset(dir_path, 0, 256);/* 申请的内存块清零 */
 	if( (getcwd(dir_path, 256)) == NULL )
 	{
-		printf(RED"[error]get local pwd failed!\n"CLS);
+		printf(RED"[error]get client local pwd(after change) failed!\n"CLS);
 		return -1;
 	}
 	else
 	{
-		printf(GREEN"[ OK  ]get local pwd successfully!\n"CLS);
+		printf(GREEN"[ OK  ]get client local pwd(after change) successfully!\n"CLS);
 		printf("[client local PWD]: %s\n", dir_path);
 	}
 	free(dir_path);
@@ -798,7 +803,7 @@ int cdClientDir(void)
  */
 int serverFuncMenu(void)
 {
-	printf(BOLD  "------------------- client local menu ----------------------\n"CLS);
+	printf(BOLD  "------------------- client server menu ---------------------\n"CLS);
 	printf(YELLOW"| 1.pwd              2.ls\n"CLS);
 	printf(YELLOW"| 3.mkdir            4.rm\n"CLS);
 	printf(YELLOW"| 5.cd               6.quit\n"CLS);
@@ -821,7 +826,7 @@ int serverFunc(int socket_fd, MSG * msg)
 	int num = 0; /* 接收用户选择序号的变量 */
 	while(1)
 	{
-		clientLocalMenu(); /* 打印主菜单 */
+		serverFuncMenu(); /* 打印主菜单 */
 		printf("please choose:");
 		if(scanf("%d", &num) < 0 ) /* 输入的是一个整数，最好还是清理一下缓冲区，不然很有可能“污染”后边的数据 */
 		{
@@ -841,8 +846,10 @@ int serverFunc(int socket_fd, MSG * msg)
 			createServerDir(socket_fd, msg);
 			break;
 		case 4:/* 删除文件 rm */
+			deleteServerFile(socket_fd, msg);
 			break;
 		case 5:/* 切换目录 cd */
+			cdServerDir(socket_fd, msg);
 			break;
 		case 6:/* 退出服务器功能菜单*/
 			return 0;
@@ -887,8 +894,8 @@ int getServerLocalPWD(int socket_fd, MSG * msg)
 }
 
 /**
- * @Function: getServerLocalPWD
- * @Description: 获取服务器当前路径
+ * @Function: getServerFileList
+ * @Description: 获取服务器当前路径下所有文件
  * @param socket_fd: 客户端的socket套接字
  * @param msg      : 服务器与客户端通信的数据结构体指针变量
  * @return  : 返回一个整数
@@ -898,8 +905,8 @@ int getServerLocalPWD(int socket_fd, MSG * msg)
 int getServerFileList(int socket_fd, MSG * msg)
 {
 	msg->type = SERVER_LS;/* 设置通信的消息类型为SERVER_LS,表示请求获取服务器当前路径下文件列表 */
-	
-	/* 发送获取客户端IP和端口号的数据 */
+	msg->result = -1;
+	/* 发送请求类型 */
 	if( send(socket_fd, msg, sizeof(MSG),0) < 0)
 	{
 		perror(RED"[error]send"CLS);
@@ -914,15 +921,15 @@ int getServerFileList(int socket_fd, MSG * msg)
 			perror(RED"[error]recv"CLS);
 			return -1;
 		}
+		printf("%s\n", msg->data);
 		if(msg->result == 0)
 			break;
-		printf("%s\n", msg->data);
 	}
 	return 0;
 }
 
 /**
- * @Function: getServerLocalPWD
+ * @Function: createServerDir
  * @Description: 在服务器当前路径创建目录
  * @param socket_fd: 客户端的socket套接字
  * @param msg      : 服务器与客户端通信的数据结构体指针变量
@@ -933,6 +940,123 @@ int getServerFileList(int socket_fd, MSG * msg)
 int createServerDir(int socket_fd, MSG * msg)
 {
 	msg->type = SERVER_MKDIR;/* 设置通信的消息类型为SERVER_MKDIR,表示请求在服务器当前路径新建目录 */
+	
+	char ch;
+	/* 请输入目录名称 */
+	bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
+	printf("Please enter file name:");
+	if( scanf("%s", msg->data) < 0)/* 获取输入数据 */
+	{
+		perror(RED"[error]scanf"CLS);
+		return -1;
+	}
+	while ((ch = getchar()) != EOF && ch != '\n') ; /* 清除缓冲区的多余字符内容 */
+	/* 发送数据 */
+	if( send(socket_fd, msg, sizeof(MSG),0) < 0)
+	{
+		perror(RED"[error]send"CLS);
+		return -1;
+	}
+	/* 等待服务器回传数据 */
+	if( recv(socket_fd, msg, sizeof(MSG),0) < 0)
+	{
+		perror(RED"[error]recv"CLS);
+		return -1;
+	}
+	printf(PURPLE"[server reply]:\n"CLS);
+	if( msg-> result == 0)
+	{
+		printf(GREEN"[ OK  ]server create successfully!\n"CLS);
+		printf("[new dir path]:%s\n", msg->data);
+	}
+	else
+		printf(RED"[error]server failed to create directory(The directory may already exist)!\n"CLS);
+	
+	return 0;
+}
+
+/**
+ * @Function: deleteServerFile
+ * @Description: 在服务器当前路径删除文件
+ * @param socket_fd: 客户端的socket套接字
+ * @param msg      : 服务器与客户端通信的数据结构体指针变量
+ * @return  : 返回一个整数
+ *            0,获取成功;
+ *            -1,获取失败
+ */
+int deleteServerFile(int socket_fd, MSG * msg)
+{
+	msg->type = SERVER_RM;/* 设置通信的消息类型为SERVER_RM,表示请求在服务器当前路径删除一个文件或目录 */
+
+	char ch;
+	char confirm;
+	/* 请输入文件名称 */
+	bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
+	printf("Please enter file name:");
+	if( scanf("%s", msg->data) < 0)/* 获取输入数据 */
+	{
+		perror(RED"[error]scanf"CLS);
+		return -1;
+	}
+	while ((ch = getchar()) != EOF && ch != '\n') ; /* 清除缓冲区的多余字符内容 */
+	printf(YELLOW"[warn ]The file name to be deleted is:[%s]\n"CLS, msg->data);
+	printf("Are you sure to delete this file(Y or N):");
+	if( scanf("%c", &confirm) < 0)/* 获取输入数据 */
+	{
+		perror(RED"[error]scanf"CLS);
+		return -1;
+	}
+	while ((ch = getchar()) != EOF && ch != '\n') ; /* 清除缓冲区的多余字符内容 */
+	if(confirm == 'N' || confirm == 'n')
+	{
+		printf(YELLOW"[warn ]Deletion of this file has been cancelled!\n"CLS);
+		return -1;
+	}
+	/* 发送数据 */
+	if( send(socket_fd, msg, sizeof(MSG),0) < 0)
+	{
+		perror(RED"[error]send"CLS);
+		return -1;
+	}
+	/* 等待服务器回传数据 */
+	if( recv(socket_fd, msg, sizeof(MSG),0) < 0)
+	{
+		perror(RED"[error]recv"CLS);
+		return -1;
+	}
+	printf(PURPLE"[server reply]:\n"CLS);
+	if( msg->result == 0)
+	{
+		printf(GREEN"[ OK  ]delete successfully!\n"CLS);
+	}
+	else
+		printf(RED"[error]Failed to delete file(The directory may not exist)!\n"CLS);
+	
+	return 0;
+}
+
+/**
+ * @Function: cdServerDir
+ * @Description: 切换到指定的服务器目录
+ * @param socket_fd: 客户端的socket套接字
+ * @param msg      : 服务器与客户端通信的数据结构体指针变量
+ * @return  : 返回一个整数
+ *            0,获取成功;
+ *            -1,获取失败
+ */
+int cdServerDir(int socket_fd, MSG * msg)
+{
+	char ch;
+	msg->type = SERVER_CD;/* 设置通信的消息类型为SERVER_CD,表示请求切换服务器当前路径 */
+	bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
+	/* 输入 cd 命令 */
+	printf("Please enter cd command(cd path):");
+	if( scanf("%[^\n]", msg->data) < 0 )/* 获取输入数据，可以带空格 */
+	{
+		perror(RED"[error]gets"CLS);
+		return -1;
+	}
+	while ((ch = getchar()) != EOF && ch != '\n') ; /* 清除缓冲区的多余字符内容 */
 	
 	/* 发送获取客户端IP和端口号的数据 */
 	if( send(socket_fd, msg, sizeof(MSG),0) < 0)
@@ -946,8 +1070,7 @@ int createServerDir(int socket_fd, MSG * msg)
 		perror(RED"[error]recv"CLS);
 		return -1;
 	}
-	printf(PURPLE"[server reply]:\n"CLS);
-	printf("%s\n", msg->data);
-	
+	printf(PURPLE"[server reply]:"CLS"\n[server local PWD]:%s\n", msg->data);
+
 	return 0;
 }
