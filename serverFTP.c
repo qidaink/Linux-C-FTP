@@ -10,9 +10,9 @@
  * ======================================================
  */
 /* 头文件 */
-#include <stdio.h>      /* perror scanf printf */
+#include <stdio.h>      /* perror scanf printf fopen fwrite */
 #include <stdlib.h>     /* exit   atoi  system */
-#include <unistd.h>     /* sleep  read  close getpid fork stat getcwd chdir*/
+#include <unistd.h>     /* sleep  read  close getpid fork stat getcwd chdir access */
 #include <errno.h>      /* errno号 */
 
 #include <sys/types.h>  /* socket getpid    bind listen accept send fork stat mkdir */
@@ -25,9 +25,9 @@
 #include <signal.h>     /* signal */
 #include <sys/wait.h>   /* waitpid */
 
-#include <dirent.h>    /* opendir readdir*/
-#include <sys/stat.h>  /* stat mkdir */
-#include <time.h>      /* localtime localtime_r */
+#include <dirent.h>     /* opendir readdir*/
+#include <sys/stat.h>   /* stat mkdir */
+#include <time.h>       /* localtime localtime_r */
 /* printf打印输出的颜色定义 */
 /* 前景色(字体颜色) */
 #define CLS           "\033[0m"    /* 清除所有颜色 */
@@ -48,6 +48,8 @@
 #define SERVER_MKDIR 3 /* 在服务器当前路径下新建目录 */
 #define SERVER_RM    4 /* 在服务器当前路径下删除一个文件或者目录 */
 #define SERVER_CD    5 /* 在服务器下切换目录 */
+#define PUT_FILE     6 /* 客户端上传文件 */
+#define GET_FILE     7 /* 客户端下载文件 */
 
 /* 客户端信息的结构体 */
 typedef struct
@@ -65,7 +67,7 @@ typedef struct
 	char name[N];  /* 用户名 */
 	char data[256];/* 数据 */
 	CLIENT_INFO client_info[2];/* 存放客户端和服务器端信息 */
-	int result;/* 标记是否成功,-1,失败;0,成功 */
+	int result;/* 标记是否操作成功，-1,失败;0,默认状态;1,成功 */
 } MSG;
 
 
@@ -84,6 +86,7 @@ int serverFileListHandle(int accept_fd, MSG * msg);  /* 处理客户端获取服
 int createServerDirHandle(int accept_fd, MSG * msg); /* 处理客户端获取服务器当前路径新建目录的请求 */
 int deleteServerFileHandle(int accept_fd, MSG * msg);/* 在服务器当前路径下删除文件或者目录请求处理 */
 int cdServerDirHandle(int accept_fd, MSG * msg);     /* 在服务器端切换路径 */
+int clientPutFileHandle(int socket_fd, MSG * msg);   /* 客户端上传文件到服务器请求处理 */
 
 int main(int argc, char *argv[])
 {
@@ -277,7 +280,7 @@ int clientDataHandle(void *arg, CLIENT_INFO clientInfo)
 	/* 数据读写 */
 	while( recv(accept_fd, &msg, sizeof(msg), 0) > 0)
 	{
-		printf(PURPLE"[client(%s:%d)]:"CLS" msg type:%d\n", clientInfo.ipv4_addr, clientInfo.port, msg.type);
+		printf(PURPLE"[client(%s:%d)]:"CLS" msg type:%d(msg type)\n", clientInfo.ipv4_addr, clientInfo.port, msg.type);
 		switch(msg.type)
 		{
 		case CONNECT_INFO:/* 客户端启动，请求获取客户端的IP和端口 */
@@ -297,6 +300,9 @@ int clientDataHandle(void *arg, CLIENT_INFO clientInfo)
 			break;
 		case SERVER_CD:   /* 在服务器切换路径 */
 			cdServerDirHandle(accept_fd, &msg);
+			break;
+		case PUT_FILE:   /* 客户端上传到服务器 */
+			clientPutFileHandle(accept_fd, &msg);
 			break;
 		default:
 			printf("Invalid data msg.\n");
@@ -341,6 +347,7 @@ int connectInfoHandle(int accept_fd, MSG * msg)
 	/* 清空原来的client_info成员数据 */
 	bzero(msg->client_info[0].ipv4_addr, sizeof(msg->client_info[0].ipv4_addr));/* 先清空IP地址存储空间信息 */
 	bzero(msg->client_info[1].ipv4_addr, sizeof(msg->client_info[1].ipv4_addr));/* 先清空IP地址存储空间信息 */
+	msg->result = 0;
 	/* 获取客户端信息 */
 	if(getpeername(accept_fd, (struct sockaddr *)&info, &addrlen) < 0)
 	{
@@ -375,14 +382,14 @@ int connectInfoHandle(int accept_fd, MSG * msg)
 	msg->client_info[1].port = port;
 
 
-	msg->result = 0;/* 表示获取信息成功 */
+	msg->result = 1;/* 表示获取信息成功 */
 	/* 发送回应信息 */
 	if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 	{
 		perror(RED"[error]send"CLS);
 		return -1;
 	}
-	return msg->result;
+	return 0;
 }
 
 /**
@@ -541,6 +548,8 @@ int serverFileListHandle(int accept_fd, MSG * msg)
 		perror(RED"[error]opendir"CLS);
 		return -1;
 	}
+	/* 先清除标记状态 */
+	msg->result = 0;
 	/* 打印所有文件名 */
 	while( (dirInfo = readdir(dir)) != NULL )
 	{
@@ -554,7 +563,6 @@ int serverFileListHandle(int accept_fd, MSG * msg)
 		else
 		{
 			getFileInfo(dirInfo->d_name, msg->data);/* 此处获取并打印文件详细信息 */
-			msg->result = -1;
 			/* 发送回应信息 */
 			if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 			{
@@ -576,13 +584,13 @@ int serverFileListHandle(int accept_fd, MSG * msg)
 		printf("server local PWD: %s\n", msg->data);
 	}
 	/* 读取文件结束 */
-	msg->result = 0;/* 以此表示文件读取全部结束 */
+	msg->result = 1;/* 以此表示文件读取全部结束 */
 	if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 	{
 		perror(RED"[error]send"CLS);
 		return -1;
 	}
-
+	closedir(dir);
 	return 0;
 }
 
@@ -598,6 +606,7 @@ int serverFileListHandle(int accept_fd, MSG * msg)
 int createServerDirHandle(int accept_fd, MSG * msg)
 {
 	char * dir_path;
+	msg->result = 0;
 	/* 申请内存 */
 	if( (dir_path = (char *)malloc(256)) == NULL )/* 申请256字节内存空间 */
 	{
@@ -623,7 +632,7 @@ int createServerDirHandle(int accept_fd, MSG * msg)
 	{
 		printf(GREEN"[ OK  ]create successfully!\n"CLS);
 		printf("[new dir path]:%s\n", dir_path);
-		msg->result = 0;/* 表示创建成功 */
+		msg->result = 1;/* 表示创建成功 */
 		/* 清空原来的data成员数据 */
 		bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
 		/* 怎么不用strncpy了？因为有警告呀，哈哈 */
@@ -657,6 +666,7 @@ int createServerDirHandle(int accept_fd, MSG * msg)
 int deleteServerFileHandle(int accept_fd, MSG * msg)
 {
 	char * file_path;
+	msg->result = 0;
 	/* 申请内存 */
 	if( (file_path = (char *)malloc(256)) == NULL )/* 申请256字节内存空间 */
 	{
@@ -681,7 +691,7 @@ int deleteServerFileHandle(int accept_fd, MSG * msg)
 	if( remove(file_path) == 0 )
 	{
 		printf(GREEN"[ OK  ]delete successfully!\n"CLS);
-		msg->result = 0;/* 表示删除成功 */
+		msg->result = 1;/* 表示删除成功 */
 	}
 	else
 	{
@@ -770,7 +780,7 @@ int cdServerDirHandle(int accept_fd, MSG * msg)
 	if( chdir(dir_path) == 0 )
 	{
 		printf(GREEN"[ OK  ]Directory change succeeded!\n"CLS);
-		msg->result = 0;
+		msg->result = 1;
 	}
 	else
 	{
@@ -800,5 +810,101 @@ int cdServerDirHandle(int accept_fd, MSG * msg)
 		return -1;
 	}
 
+	return 0;
+}
+
+/**
+ * @Function: clientPutFileHandle
+ * @Description: 客户端上传文件到服务器请求处理
+ * @param accept_fd: 客户端的socket套接字
+ * @param msg      : 服务器与客户端通信的数据结构体指针变量
+ * @return  : 返回一个整数
+ *            0,上传成功;
+ *            -1,上传失败
+ */
+int clientPutFileHandle(int accept_fd, MSG * msg)
+{
+	msg->result = 0;
+	/* 1.判断要上传的文件在服务器中是否已经存在 */
+	FILE * fpW = NULL; /* 目标文件的文件指针 */
+	while(1)
+	{
+		printf(PURPLE"[client(%s:%d)]:"CLS"%s(put file name)\n", msg->client_info[0].ipv4_addr, msg->client_info[0].port, msg->data);
+		/* 文件不存在则会报错 */
+		if( access(msg->data, F_OK) < 0 )/* 检测文件是否存在(文件不存在的话会报错，省去文件检测的过程) */
+		{
+			perror("\033[1;31m[error]source file open(can ignore)\033[0m");
+			msg->result = 1; /* msg->result 设为1表示服务器端文件不存在，已正常打开 */
+		}
+		else /* 文件已存在 */
+		{
+			msg->result = -1;/* msg->result 设为-1表示服务器端文件不存在，已正常打开 */
+		}
+		/* 发送回应信息 */
+		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+		{
+			perror(RED"[error]send"CLS);
+			return -1;
+		}
+		/* 接收来自客户端的信息 */
+		if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
+		{
+			perror(RED"[error]recv"CLS);
+			return -1;
+		}
+		if(msg->result == 2)/* 说明可以开始接收信息了 */
+			break;
+	}
+	printf(GREEN"[ OK  ]Start receiving files!\n"CLS);
+	/* 2.以写的方式打开文件 */
+	/* 2.1打开文件 */
+	if( (fpW = fopen(msg->data, "w+")) == NULL )
+	{
+		perror("\033[1;31m[error]target file open\033[0m");
+		msg->result = -1;
+		/* 发送回应信息 */
+		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+		{
+			perror(RED"[error]send"CLS);
+			return -1;
+		}
+		return -1;
+	}
+	else
+	{
+		printf(GREEN"[ OK  ]The file is opened successfully. You can upload the file!\n"CLS);
+		msg->result = 3;
+		/* 发送回应信息 */
+		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+		{
+			perror(RED"[error]send"CLS);
+			return -1;
+		}
+	}
+	/* 2.2 重设文件指针到开头*/
+	rewind(fpW);
+	/* 3.开始传输文件 */
+	while(1)
+	{
+		/* 3.1接收数据 */
+		/* 接收来自客户端的信息 */
+		if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
+		{
+			perror(RED"[error]recv"CLS);
+			return -1;
+		}
+		/* 3.2判断是否结束 */
+		if(msg->result == 4)
+			break;
+		/* 3.3写入文件 */
+		if( (fwrite(msg->data, 1, strlen(msg->data), fpW)) < 0)
+		{
+			perror("\033[1;31m[error]fwrite\033[0m");
+			return -1;
+		}
+	}
+	printf(GREEN"[ OK  ]File upload End!\n"CLS);
+	fclose(fpW);
+	
 	return 0;
 }
