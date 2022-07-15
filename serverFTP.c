@@ -87,6 +87,7 @@ int createServerDirHandle(int accept_fd, MSG * msg); /* 处理客户端获取服
 int deleteServerFileHandle(int accept_fd, MSG * msg);/* 在服务器当前路径下删除文件或者目录请求处理 */
 int cdServerDirHandle(int accept_fd, MSG * msg);     /* 在服务器端切换路径 */
 int clientPutFileHandle(int socket_fd, MSG * msg);   /* 客户端上传文件到服务器请求处理 */
+int clientGetFileHandle(int accept_fd, MSG * msg);   /* 客户端从服务器下载文件 */
 
 int main(int argc, char *argv[])
 {
@@ -304,6 +305,9 @@ int clientDataHandle(void *arg, CLIENT_INFO clientInfo)
 		case PUT_FILE:   /* 客户端上传到服务器 */
 			clientPutFileHandle(accept_fd, &msg);
 			break;
+		case GET_FILE:   /* 客户端上传到服务器 */
+			clientGetFileHandle(accept_fd, &msg);
+			break;
 		default:
 			printf("Invalid data msg.\n");
 			break;
@@ -404,7 +408,7 @@ int connectInfoHandle(int accept_fd, MSG * msg)
 int serverLocalPWDHandle(int accept_fd, MSG * msg)
 {
 	/* 清空原来的data成员数据 */
-	bzero(msg->data, sizeof(msg->data));/* 先清空IP地址存储空间信息 */
+	bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空IP地址存储空间信息 */
 	/* 获取当前路径 */
 	if( (getcwd(msg->data, sizeof(msg->data))) == NULL )
 	{
@@ -554,7 +558,7 @@ int serverFileListHandle(int accept_fd, MSG * msg)
 	while( (dirInfo = readdir(dir)) != NULL )
 	{
 		/* 清空原来的data成员数据 */
-		bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
+		bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
 		/* 跳过 . 和 ..  */
 		if(strcmp(dirInfo->d_name, ".") == 0 || strcmp(dirInfo->d_name, "..") == 0)
 		{
@@ -572,7 +576,7 @@ int serverFileListHandle(int accept_fd, MSG * msg)
 		}
 	}
 	/* 清空原来的data成员数据 */
-	bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
+	bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
 	/* 打印当前路径 debug1*/
 	if( (getcwd(msg->data, sizeof(msg->data))) == NULL )
 	{
@@ -634,7 +638,7 @@ int createServerDirHandle(int accept_fd, MSG * msg)
 		printf("[new dir path]:%s\n", dir_path);
 		msg->result = 1;/* 表示创建成功 */
 		/* 清空原来的data成员数据 */
-		bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
+		bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
 		/* 怎么不用strncpy了？因为有警告呀，哈哈 */
 		/* https://stackoverflow.com/questions/56782248/gcc-specified-bound-depends-on-the-length-of-the-source-argument */
 		strcpy(msg->data, dir_path);
@@ -798,7 +802,7 @@ int cdServerDirHandle(int accept_fd, MSG * msg)
 	{
 		printf(GREEN"[ OK  ]get server local pwd(after change) successfully!\n"CLS);
 		printf("[server local PWD+]: %s\n", dir_path);
-		bzero(msg->data, sizeof(msg->data));/* 先清空数据字符串空间 */
+		bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
 		strcpy(msg->data, dir_path);
 	}
 
@@ -833,7 +837,7 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
 		/* 文件不存在则会报错 */
 		if( access(msg->data, F_OK) < 0 )/* 检测文件是否存在(文件不存在的话会报错，省去文件检测的过程) */
 		{
-			perror("\033[1;31m[error]source file open(can ignore)\033[0m");
+			perror(RED"[error]source file open(can ignore)"CLS);
 			msg->result = 1; /* msg->result 设为1表示服务器端文件不存在，已正常打开 */
 		}
 		else /* 文件已存在 */
@@ -860,7 +864,7 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
 	/* 2.1打开文件 */
 	if( (fpW = fopen(msg->data, "w+")) == NULL )
 	{
-		perror("\033[1;31m[error]target file open\033[0m");
+		perror(RED"[error]target file open"CLS);
 		msg->result = -1;
 		/* 发送回应信息 */
 		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
@@ -899,12 +903,132 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
 		/* 3.3写入文件 */
 		if( (fwrite(msg->data, 1, strlen(msg->data), fpW)) < 0)
 		{
-			perror("\033[1;31m[error]fwrite\033[0m");
+			perror(RED"[error]fwrite"CLS);
 			return -1;
 		}
 	}
 	printf(GREEN"[ OK  ]File upload End!\n"CLS);
 	fclose(fpW);
+
+	return 0;
+}
+
+/**
+ * @Function: clientGetFileHandle
+ * @Description: 客户端从服务器下载文件请求处理
+ * @param accept_fd: 客户端的socket套接字
+ * @param msg      : 服务器与客户端通信的数据结构体指针变量
+ * @return  : 返回一个整数
+ *            0,下载成功;
+ *            -1,下载失败
+ */
+int clientGetFileHandle(int accept_fd, MSG * msg)
+{
+	int count = -1;
+	msg->result = 0;
+	/* 1.判断要下载的文件在服务器中是否已经存在 */
+	while(1)
+	{
+		printf(PURPLE"[client(%s:%d)]:"CLS"%s(put file name)\n", msg->client_info[0].ipv4_addr, msg->client_info[0].port, msg->data);
+		/* 文件不存在则回应-1 */
+		if( access(msg->data, F_OK) < 0 )/* 检测文件是否存在(文件不存在的话返回-1) */
+		{
+			perror(RED"[error]access(can ignore)"CLS);
+			msg->result = -1; /* msg->result 设为1表示服务器端文件不存在，提示客户端重新输入需要下载的文件 */
+		}
+		else /* 文件已存在则回应1 */
+		{
+			printf(GREEN"[ OK  ]The server source file exists and can be downloaded!\n"CLS);
+			msg->result = 1;/* msg->result 设为1表示服务器端文件存在，可以下载 */
+		}
+		/* 发送回应信息 */
+		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+		{
+			perror(RED"[error]send"CLS);
+			return -1;
+		}
+		/* 接收来自客户端的信息 */
+		if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
+		{
+			perror(RED"[error]recv"CLS);
+			return -1;
+		}
+		if(msg->result == 2)/* 说明无法开启数据传输 */
+		{
+			printf(RED"[error]Failed to create a file for client receiving!\n"CLS);
+			return -1;
+		}
+		if(msg->result == 3)/* 说明可以开始接收信息了 */
+		{
+			printf(GREEN"[ OK  ]Create a file for client receiving successfully!\n"CLS);
+			break;
+		}
+
+	}
+	/* 2.打开文件准备发送数据*/
+	/* 2.1打开相关文件 */
+	FILE * fpR = NULL; /* 源文件的文件指针 */
+	printf("msg->data=%s\n", msg->data);
+	if( (fpR = fopen(msg->data, "r")) == NULL )/* 以只读方式打开文件(文件不存在的话会报错，省去文件检测的过程) */
+	{
+		perror(RED"[error]source file open"CLS);
+		msg->result = 4;
+		/* 发送回应信息 */
+		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+		{
+			perror(RED"[error]send"CLS);
+			return -1;
+		}
+		return -1;
+	}
+	else
+	{
+		printf(GREEN"[ OK  ]The server file [%s] is opened successfully.\n"CLS, msg->data);
+		msg->result = 5;
+		/* 发送回应信息 */
+		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+		{
+			perror(RED"[error]send"CLS);
+			return -1;
+		}
+	}
+	/* 2.2将文件指针移动到文件开头 */
+	rewind(fpR);
+
+	/* 3.传输文件准备工作已经完成 */
+	printf(GREEN"[ OK  ]The client can start downloading the file!\n"CLS);
+	char temp[256];
 	
+	/* 4.开始下载文件 */
+	while(!feof(fpR))
+	{
+		/* 先清空之前的数据 */
+		bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
+		/* 4.1读取文件 */
+		if( (count = fread(temp, 1, 256, fpR)) < 0)
+		{
+			perror(RED"[error]fread"CLS);
+			msg->result = -1;/* 表示文件读取失败 */
+		}
+		else
+			msg->result = 1;/* 表示文件读取成功 */
+		/* 4.2写入文件内容到socket套接字 */
+		strcpy(msg->data, temp);
+		if( send(accept_fd, msg, sizeof(MSG),0) < 0)
+		{
+			perror(RED"[error]send"CLS);
+			return -1;
+		}
+	}
+	/* 通知服务器文件传输结束 */
+	msg->result = 6;/* 表示文件读写完成 */
+	bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
+	if( send(accept_fd, msg, sizeof(MSG),0) < 0)
+	{
+		perror(RED"[error]send"CLS);
+		return -1;
+	}
+	printf(GREEN"[ OK  ]File upload End!\n"CLS);
+	fclose(fpR);
 	return 0;
 }
