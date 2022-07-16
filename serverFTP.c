@@ -15,7 +15,7 @@
 #include <unistd.h>     /* sleep  read  close getpid fork stat getcwd chdir access */
 #include <errno.h>      /* errno号 */
 
-#include <sys/types.h>  /* socket getpid    bind listen accept send fork stat mkdir */
+#include <sys/types.h>  /* socket getpid    bind listen accept send fork stat mkdir open */
 #include <sys/socket.h> /* socket inet_addr bind listen accept send */
 #include <arpa/inet.h>  /* htons  inet_addr inet_pton */
 #include <netinet/in.h> /* ntohs  inet_addr inet_ntop*/
@@ -26,8 +26,12 @@
 #include <sys/wait.h>   /* waitpid */
 
 #include <dirent.h>     /* opendir readdir*/
-#include <sys/stat.h>   /* stat mkdir */
+#include <sys/stat.h>   /* stat mkdir open*/
 #include <time.h>       /* localtime localtime_r */
+
+#include <fcntl.h>      /* open */
+
+
 /* printf打印输出的颜色定义 */
 /* 前景色(字体颜色) */
 #define CLS           "\033[0m"    /* 清除所有颜色 */
@@ -913,6 +917,7 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
 	return 0;
 }
 
+
 /**
  * @Function: clientGetFileHandle
  * @Description: 客户端从服务器下载文件请求处理
@@ -924,56 +929,48 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
  */
 int clientGetFileHandle(int accept_fd, MSG * msg)
 {
-	int count = -1;
-	msg->result = 0;
-	/* 1.判断要下载的文件在服务器中是否已经存在 */
+	/* 1.显示要下载的文件名称(调用该函数前，已经接收了一次数据) */
+	printf(PURPLE"[client(%s:%d)]:"CLS"%s(cliend download file name)\n", msg->client_info[0].ipv4_addr, msg->client_info[0].port, msg->name);
+	/* 2.判断要下载的文件是否在服务器端存在 */
 	while(1)
 	{
-		printf(PURPLE"[client(%s:%d)]:"CLS"%s(put file name)\n", msg->client_info[0].ipv4_addr, msg->client_info[0].port, msg->data);
-		/* 文件不存在则回应-1 */
-		if( access(msg->data, F_OK) < 0 )/* 检测文件是否存在(文件不存在的话返回-1) */
+		/* 2.1判断文件是否存在 */
+		if( access(msg->name, F_OK) < 0 )/* 检测文件是否存在(文件不存在的话返回-1) */
 		{
-			perror(RED"[error]access(can ignore)"CLS);
-			msg->result = -1; /* msg->result 设为1表示服务器端文件不存在，提示客户端重新输入需要下载的文件 */
+			perror(RED"[error]access"CLS);
+			sprintf(msg->data, RED"[error]The file [%s] is not existed!\n"CLS, msg->name);
+			msg->result = -1; /* msg->result 设为-1表示服务器端文件不存在，提示客户端重新输入需要下载的文件 */
 		}
-		else /* 文件已存在则回应1 */
+		else
 		{
-			printf(GREEN"[ OK  ]The server source file exists and can be downloaded!\n"CLS);
-			msg->result = 1;/* msg->result 设为1表示服务器端文件存在，可以下载 */
+			printf(GREEN"[ OK  ]The file [%s] is existed!\n"CLS, msg->name);
+			sprintf(msg->data, GREEN"[ OK  ]The file [%s] is existed!\n"CLS, msg->name);
+			msg->result = 2;
 		}
-		/* 发送回应信息 */
+		/* 2.2向客户端发送消息，告知服务器文件状态 */
 		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 		{
 			perror(RED"[error]send"CLS);
 			return -1;
 		}
-		/* 接收来自客户端的信息 */
+		/* 2.3接收来自客户端的信息 */
 		if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
 		{
 			perror(RED"[error]recv"CLS);
 			return -1;
 		}
-		if(msg->result == 2)/* 说明无法开启数据传输 */
-		{
-			printf(RED"[error]Failed to create a file for client receiving!\n"CLS);
-			return -1;
-		}
-		if(msg->result == 3)/* 说明可以开始接收信息了 */
-		{
-			printf(GREEN"[ OK  ]Create a file for client receiving successfully!\n"CLS);
+		if(msg->result == 3)
 			break;
-		}
-
 	}
-	/* 2.打开文件准备发送数据*/
-	/* 2.1打开相关文件 */
-	FILE * fpR = NULL; /* 源文件的文件指针 */
-	printf("msg->data=%s\n", msg->data);
-	if( (fpR = fopen(msg->data, "r")) == NULL )/* 以只读方式打开文件(文件不存在的话会报错，省去文件检测的过程) */
+	/* 说明：跳出循环后 msg->result = 3 */
+	/* 3.打开要下载的文件 */
+	int fdR = -1;
+	if( (fdR = open(msg->name, O_RDONLY)) < 0 )
 	{
-		perror(RED"[error]source file open"CLS);
-		msg->result = 4;
-		/* 发送回应信息 */
+		perror(RED"[error]open"CLS);
+		msg->result = -1;
+		printf(RED"[error]File [%s] opening failure!\n"CLS, msg->name);
+		sprintf(msg->data, GREEN"[ OK  ]File [%s] opened successfully!\n"CLS, msg->name);
 		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 		{
 			perror(RED"[error]send"CLS);
@@ -983,52 +980,69 @@ int clientGetFileHandle(int accept_fd, MSG * msg)
 	}
 	else
 	{
-		printf(GREEN"[ OK  ]The server file [%s] is opened successfully.\n"CLS, msg->data);
-		msg->result = 5;
-		/* 发送回应信息 */
+		msg->result = 4;/* 表示服务器端文件打开成功 */
+		printf(GREEN"[ OK  ]File [%s] opened successfully!\n"CLS, msg->name);
+		sprintf(msg->data, GREEN"[ OK  ]File [%s] opened successfully!\n"CLS, msg->name);
 		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 		{
 			perror(RED"[error]send"CLS);
 			return -1;
 		}
 	}
-	/* 2.2将文件指针移动到文件开头 */
-	rewind(fpR);
-
-	/* 3.传输文件准备工作已经完成 */
-	printf(GREEN"[ OK  ]The client can start downloading the file!\n"CLS);
-	char temp[256];
-	
-	/* 4.开始下载文件 */
-	while(!feof(fpR))
-	{
-		/* 先清空之前的数据 */
-		bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
-		/* 4.1读取文件 */
-		if( (count = fread(temp, 1, 256, fpR)) < 0)
-		{
-			perror(RED"[error]fread"CLS);
-			msg->result = -1;/* 表示文件读取失败 */
-		}
-		else
-			msg->result = 1;/* 表示文件读取成功 */
-		/* 4.2写入文件内容到socket套接字 */
-		strcpy(msg->data, temp);
-		if( send(accept_fd, msg, sizeof(MSG),0) < 0)
-		{
-			perror(RED"[error]send"CLS);
-			return -1;
-		}
-	}
-	/* 通知服务器文件传输结束 */
-	msg->result = 6;/* 表示文件读写完成 */
+	/* 说明：此处结束 msg->result = 4 */
+	/* 4.等待等待客户端打开接收文件 */
 	bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 先清空数据字符串空间 */
-	if( send(accept_fd, msg, sizeof(MSG),0) < 0)
+	if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
 	{
-		perror(RED"[error]send"CLS);
+		perror(RED"[error]recv"CLS);
 		return -1;
 	}
-	printf(GREEN"[ OK  ]File upload End!\n"CLS);
-	fclose(fpR);
+	printf(PURPLE"[client(%s:%d)]:"CLS"%s\n", msg->client_info[0].ipv4_addr, msg->client_info[0].port, msg->data);
+	if(msg->result < 0)
+		return -1;
+	/* 说明：此处结束 msg->result = 5 */
+	/* 5.开始传输文件 */
+	int count = -1;
+	while(1)
+	{
+		/* 等待文件传输信号 */
+		if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
+		{
+			perror(RED"[error]recv"CLS);
+			return -1;
+		}
+		if(msg->result == 6)
+		{
+			bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 清空名称字符串空间 */
+			/* 从文件描述符读取文件 */
+			if( (count = read(fdR, msg->data, sizeof(msg->data))) <= 0)
+			{
+				if( count == 0)
+				{
+					printf(GREEN"[ OK  ]File [%s] reading finished!\n"CLS, msg->name);
+					msg->result = 8;
+					if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+					{
+						perror(RED"[error]send"CLS);
+						return -1;
+					}
+				}
+				else
+					perror(RED"[error]read"CLS);
+				break;
+			}
+			/* 写入读取到的数据到socket套接字 */
+			msg->result = 7;
+			if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+			{
+				perror(RED"[error]send"CLS);
+				return -1;
+			}
+		}
+	}
+	
+	/* 说明：此处结束 msg->result = 8 */
+	close(fdR);/* 关闭读取文件的文件描述符 */
+	
 	return 0;
 }
