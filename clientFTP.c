@@ -1466,32 +1466,52 @@ int clientGetFile(int socket_fd, MSG * msg)
 			return -1;
 		}
 	}
+	
 	/* 说明：此处结束 msg->result = 5 */
 	/* 10.开始进行文件传输 */
+	/* 10.1告诉服务器启动一次文件数据传输 */
 	msg->result = 6;/* 告诉服务器，启动一次文件数据传输 */
 	if( send(socket_fd, msg, sizeof(MSG), 0) < 0)
 	{
 		perror(RED"[error]send"CLS);
 		return -1;
 	}
+	int count = -1;
+	/* 说明：为什么不用mag->data传输数据？因为老乱码，即便每次传输客户端和服务器都有标志，但是依然有乱码，目前未知原因，后边再改进把 */
+	char * buffer;
+	if( (buffer = (char *)malloc(256)) == NULL )/* 申请128字节内存空间 */
+	{
+		printf(RED"[error]get buffer memory malloc failed!\n"CLS);
+		free(buffer);
+		return -1;
+	}
+	memset(buffer, 0, 256);          /* 申请的内存块清零 */
+	
 	while(1)
 	{
-		/* 等待文件传输信号 */
+		/* 10.2等待文件数据到达的标志 msg->result == 7 */
 		if( recv(socket_fd, msg, sizeof(MSG),0) < 0)
 		{
 			perror(RED"[error]recv"CLS);
 			return -1;
 		}
-		if(msg->result == 7)
+		/* 10.3处理服务器标志信息 */
+		if(msg->result == 7) /* 说明服务器文件有数据写入到socket套接字 */
 		{
-			
-			/* 写入读取到的数据到socket套接字 */
-			if( (write(fdW, msg->data, strlen(msg->data))) < 0)
+			bzero(buffer, 256);/* 清空名称字符串空间 */
+			/* 10.3.1从socket套接字读取文件数据 */
+			if((count = read(socket_fd, buffer, 256)) < 0)
+			{
+				perror(RED"[error]read"CLS);
+				return -1;
+			}
+			/* 10.3.2写入读取到的数据到客户端文件 */
+			if( (write(fdW, buffer, count)) < 0)
 			{
 				perror(RED"[error]write"CLS);
 				return -1;
 			}
-			/* 告诉服务器启动下一次传输 */
+			/* 10.3.3告诉服务器启动下一次传输 */
 			msg->result = 6;
 			if( send(socket_fd, msg, sizeof(MSG), 0) < 0)
 			{
@@ -1499,7 +1519,7 @@ int clientGetFile(int socket_fd, MSG * msg)
 				return -1;
 			}
 		}
-		else
+		else /* 文件传输结束 */
 		{
 			printf(GREEN"[ OK  ]The file "PURPLE"[%s(%s)]"CLS GREEN" has been downloaded!\n"CLS, msg->name, filenameTemp);
 			break;
@@ -1509,5 +1529,6 @@ int clientGetFile(int socket_fd, MSG * msg)
 	/* 说明：此处结束 msg->result = 8 */
 	close(fdW);/* 关闭读取文件的文件描述符 */
 	free(command);
+	free(buffer);
 	return 0;
 }

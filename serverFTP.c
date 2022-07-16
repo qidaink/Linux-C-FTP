@@ -1003,24 +1003,36 @@ int clientGetFileHandle(int accept_fd, MSG * msg)
 	/* 说明：此处结束 msg->result = 5 */
 	/* 5.开始传输文件 */
 	int count = -1;
+	/* 说明：为什么不用mag->data传输数据？因为老乱码，即便每次传输客户端和服务器都有标志，但是依然有乱码，目前未知原因，后边再改进把 */
+	char * buffer;
+	if( (buffer = (char *)malloc(256)) == NULL )/* 申请128字节内存空间 */
+	{
+		printf(RED"[error]get buffer memory malloc failed!\n"CLS);
+		free(buffer);
+		return -1;
+	}
+	memset(buffer, 0, 256);          /* 申请的内存块清零 */
+	
 	while(1)
 	{
-		/* 等待文件传输信号 */
+		/* 5.1等待客户端可以开始文件开始传输的标志 */
 		if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
 		{
 			perror(RED"[error]recv"CLS);
 			return -1;
 		}
+		/* 5.2处理客户端标志信息 */
 		if(msg->result == 6)
 		{
-			bzero(msg->data, sizeof(msg->data)/sizeof(char));/* 清空名称字符串空间 */
-			/* 从文件描述符读取文件 */
-			if( (count = read(fdR, msg->data, sizeof(msg->data))) <= 0)
+			bzero(buffer, 256);/* 清空名称字符串空间 */
+			/* 5.2.1从文件描述符读取服务器文件数据 */
+			if( (count = read(fdR, buffer, 256)) <= 0)
 			{
 				if( count == 0)
 				{
 					printf(GREEN"[ OK  ]File [%s] reading finished!\n"CLS, msg->name);
 					msg->result = 8;
+					/* 发送文件读取结束标志 */
 					if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 					{
 						perror(RED"[error]send"CLS);
@@ -1031,18 +1043,24 @@ int clientGetFileHandle(int accept_fd, MSG * msg)
 					perror(RED"[error]read"CLS);
 				break;
 			}
-			/* 写入读取到的数据到socket套接字 */
+			/* 5.2.2发送一个可以从套接字读取数据的标志 */
 			msg->result = 7;
 			if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 			{
 				perror(RED"[error]send"CLS);
 				return -1;
 			}
+			/* 5.2.3写入数据到socket套接字 */
+			if(write(accept_fd, buffer, count) < 0)
+			{
+				perror(RED"[error]write"CLS);
+				break;
+			}
 		}
 	}
 	
 	/* 说明：此处结束 msg->result = 8 */
 	close(fdR);/* 关闭读取文件的文件描述符 */
-	
+	free(buffer);
 	return 0;
 }
