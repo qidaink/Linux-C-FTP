@@ -832,21 +832,26 @@ int cdServerDirHandle(int accept_fd, MSG * msg)
  */
 int clientPutFileHandle(int accept_fd, MSG * msg)
 {
-	msg->result = 0;
-	/* 1.判断要上传的文件在服务器中是否已经存在 */
-	FILE * fpW = NULL; /* 目标文件的文件指针 */
+	/* 1.显示要上传的文件名称(调用该函数前，已经接收了一次数据) */
+	printf(PURPLE"[client(%s:%d)]:"CLS"%s(cliend put file name)\n", msg->client_info[0].ipv4_addr, msg->client_info[0].port, msg->name);
+	/* 存储客户端上传的文件名称 */
+	char filenameTemp[32] = {0};
+	strcpy(filenameTemp, msg->name);
+	/* 2.判断要上传的文件在服务器中是否已经存在 */
 	while(1)
 	{
-		printf(PURPLE"[client(%s:%d)]:"CLS"%s(put file name)\n", msg->client_info[0].ipv4_addr, msg->client_info[0].port, msg->data);
-		/* 文件不存在则会报错 */
-		if( access(msg->data, F_OK) < 0 )/* 检测文件是否存在(文件不存在的话会报错，省去文件检测的过程) */
+		/* 2.1检测文件存在状态 */
+		if( access(msg->name, F_OK) < 0 )/* 检测文件是否存在(文件不存在的话返回-1) */
 		{
-			perror(RED"[error]source file open(can ignore)"CLS);
-			msg->result = 1; /* msg->result 设为1表示服务器端文件不存在，已正常打开 */
+			perror(RED"[error]access(can ignore)"CLS);
+			sprintf(msg->data, GREEN"[ OK  ]The file "CLS PURPLE"[%s]"CLS GREEN" is not existed!\n"CLS, msg->name);
+			msg->result = -1; /* msg->result 设为-1表示服务器端文件不存在，提示客户端重新输入需要下载的文件 */
 		}
-		else /* 文件已存在 */
+		else /* 服务器端所在目录有该文件，就需要知客户端覆盖文件还是新建文件用于接收 */
 		{
-			msg->result = -1;/* msg->result 设为-1表示服务器端文件不存在，已正常打开 */
+			printf(RED"[error]The file "CLS PURPLE"[%s]"CLS RED" is existed!\n"CLS, msg->name);
+			sprintf(msg->data, RED"[error]The file "CLS PURPLE"[%s]"CLS RED" is existed!\n"CLS, msg->name);
+			msg->result = 2;
 		}
 		/* 发送回应信息 */
 		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
@@ -860,15 +865,18 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
 			perror(RED"[error]recv"CLS);
 			return -1;
 		}
-		if(msg->result == 2)/* 说明可以开始接收信息了 */
+		if(msg->result == 3)/* 说明可以开始接收信息了 */
 			break;
 	}
-	printf(GREEN"[ OK  ]Start receiving files!\n"CLS);
-	/* 2.以写的方式打开文件 */
-	/* 2.1打开文件 */
-	if( (fpW = fopen(msg->data, "w+")) == NULL )
+	/* 说明：跳出循环后 msg->result = 3 */
+	/* 3.打开要写入的文件 */
+	FILE * fpW = NULL;
+	if( (fpW = fopen(msg->name, "w+")) == NULL )
 	{
-		perror(RED"[error]target file open"CLS);
+		perror(RED"[error]fopen"CLS);
+		bzero(msg->data, sizeof(msg->data)/sizeof(msg->data));
+		printf(RED"[error]Failed to open the file "CLS PURPLE"[%s]"CLS RED" on the server. !\n"CLS, msg->name);
+		sprintf(msg->data, RED"[error]Failed to open the file "CLS PURPLE"[%s]"CLS RED" on the server. !\n"CLS, msg->name);
 		msg->result = -1;
 		/* 发送回应信息 */
 		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
@@ -880,8 +888,10 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
 	}
 	else
 	{
-		printf(GREEN"[ OK  ]The file is opened successfully. You can upload the file!\n"CLS);
-		msg->result = 3;
+		bzero(msg->data, sizeof(msg->data)/sizeof(msg->data));
+		printf(GREEN"[ OK  ]The file "CLS PURPLE"[%s]"CLS GREEN" is opened successfully on server. You can upload the file!\n"CLS, msg->name);
+		sprintf(msg->data, GREEN"[ OK  ]The file "CLS PURPLE"[%s]"CLS GREEN" is opened successfully on server. You can upload the file!\n"CLS, msg->name);
+		msg->result = 4;
 		/* 发送回应信息 */
 		if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
 		{
@@ -889,31 +899,69 @@ int clientPutFileHandle(int accept_fd, MSG * msg)
 			return -1;
 		}
 	}
-	/* 2.2 重设文件指针到开头*/
 	rewind(fpW);
-	/* 3.开始传输文件 */
+	/* 4.开始传输文件 */
+	printf(GREEN"[ OK  ]Start receiving files!\n"CLS);
+	/* 4.1定义一个缓冲区 */
+	char * buffer;
+	if( (buffer = (char *)malloc(256)) == NULL )/* 申请128字节内存空间 */
+	{
+		printf(RED"[error]get buffer memory malloc failed!\n"CLS);
+		free(buffer);
+		return -1;
+	}
+	memset(buffer, 0, 256);          /* 申请的内存块清零 */
+
+	/* 4.2告诉客户端开始上传 */
+	msg->result = 5;
+	if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+	{
+		perror(RED"[error]send"CLS);
+		return -1;
+	}
+	/* 4.3开始文件传输 */
+	int count = -1;
 	while(1)
 	{
-		/* 3.1接收数据 */
-		/* 接收来自客户端的信息 */
+		/* 4.3.1等待客户端传输一次文件的标志 */
 		if( recv(accept_fd, msg, sizeof(MSG),0) < 0)
 		{
 			perror(RED"[error]recv"CLS);
 			return -1;
 		}
-		/* 3.2判断是否结束 */
-		if(msg->result == 4)
-			break;
-		/* 3.3写入文件 */
-		if( (fwrite(msg->data, 1, strlen(msg->data), fpW)) < 0)
+		if(msg->result == 6)
 		{
-			perror(RED"[error]fwrite"CLS);
-			return -1;
+			bzero(buffer, 256);/* 清空名称字符串空间 */
+			/* 4.3.2从socket套接字读取文件数据 */
+			if((count = read(accept_fd, buffer, 256)) < 0)
+			{
+				perror(RED"[error]read"CLS);
+				return -1;
+			}
+			/* 4.3.3写入文件 */
+			if( (fwrite(buffer, 1, count, fpW)) < 0)
+			{
+				perror(RED"[error]fwrite"CLS);
+				return -1;
+			}
+			/* 4.3.4告诉客户端启动下一次传输 */
+			msg->result = 5;
+			if( send(accept_fd, msg, sizeof(MSG), 0) < 0)
+			{
+				perror(RED"[error]send"CLS);
+				return -1;
+			}
+
+		}
+		else
+		{
+			printf(GREEN"[ OK  ]The file "PURPLE"[%s(%s)]"CLS GREEN" has been uploaded!\n"CLS, msg->name, filenameTemp);
+			break;
 		}
 	}
-	printf(GREEN"[ OK  ]File upload End!\n"CLS);
+	/* 说明：此处结束 msg->result = 7 */
 	fclose(fpW);
-
+	free(buffer);
 	return 0;
 }
 
@@ -1012,7 +1060,7 @@ int clientGetFileHandle(int accept_fd, MSG * msg)
 		return -1;
 	}
 	memset(buffer, 0, 256);          /* 申请的内存块清零 */
-	
+
 	while(1)
 	{
 		/* 5.1等待客户端可以开始文件开始传输的标志 */
@@ -1058,7 +1106,7 @@ int clientGetFileHandle(int accept_fd, MSG * msg)
 			}
 		}
 	}
-	
+
 	/* 说明：此处结束 msg->result = 8 */
 	close(fdR);/* 关闭读取文件的文件描述符 */
 	free(buffer);
